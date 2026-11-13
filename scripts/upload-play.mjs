@@ -182,6 +182,8 @@ var PlayClient = class {
 };
 
 // src/ci/common.ts
+import { appendFileSync, existsSync } from "node:fs";
+import { resolve, sep } from "node:path";
 function readConfig() {
   const raw = process.env.SHIPKIT_CONFIG;
   if (!raw) throw new Error("SHIPKIT_CONFIG is missing.");
@@ -192,8 +194,31 @@ function requireEnv(name) {
   if (!v) throw new Error(`${name} is missing.`);
   return v;
 }
+function exportEnv(name, value) {
+  if (!process.env.GITHUB_ENV) return;
+  const delim = `SHIPKIT_EOF_${Math.random().toString(36).slice(2)}`;
+  appendFileSync(process.env.GITHUB_ENV, `${name}<<${delim}
+${value}
+${delim}
+`);
+}
+function enterProjectDir() {
+  const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
+  const sub = (readConfig().projectDir ?? "").trim();
+  const dir = resolve(root, sub);
+  if (dir !== root && !dir.startsWith(root + sep)) throw new Error("The app folder must be inside the repository.");
+  if (!existsSync(dir)) throw new Error(`The folder "${sub}" does not exist in this repository. Has it been pushed to GitHub?`);
+  process.chdir(dir);
+  return dir;
+}
 function main(fn) {
-  fn().catch((err) => {
+  Promise.resolve().then(() => {
+    const dir = enterProjectDir();
+    if (!existsSync("package.json")) {
+      throw new Error(`There is no package.json in "${readConfig().projectDir || "the top of the repository"}" on GitHub. Check that your app's code has been pushed.`);
+    }
+    exportEnv("SHIPKIT_PROJECT_DIR", dir);
+  }).then(fn).catch((err) => {
     console.error(`::error::${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   });

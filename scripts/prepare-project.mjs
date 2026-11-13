@@ -73,7 +73,7 @@ ${tail(result.stderr || result.stdout, 30)}`);
 function tail(text, lines) {
   return text.trimEnd().split("\n").slice(-lines).join("\n");
 }
-var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
+var exec = (cmd, args, opts = {}) => new Promise((resolve2, reject) => {
   const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
@@ -93,7 +93,7 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
   const timer = opts.timeoutMs ? setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs) : void 0;
   child.on("error", (err) => {
     if (timer) clearTimeout(timer);
-    if (opts.allowFailure) resolve({ code: 127, stdout, stderr: String(err) });
+    if (opts.allowFailure) resolve2({ code: 127, stdout, stderr: String(err) });
     else reject(err);
   });
   child.on("close", (code) => {
@@ -101,14 +101,15 @@ var exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
     if (pending && opts.onLine) opts.onLine(pending);
     const result = { code: code ?? 1, stdout, stderr };
     if (result.code !== 0 && !opts.allowFailure) reject(new CommandError(cmd, result));
-    else resolve(result);
+    else resolve2(result);
   });
   if (opts.input !== void 0) child.stdin.write(opts.input);
   child.stdin.end();
 });
 
 // src/ci/common.ts
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2 } from "node:fs";
+import { resolve, sep as sep2 } from "node:path";
 function readConfig() {
   const raw = process.env.SHIPKIT_CONFIG;
   if (!raw) throw new Error("SHIPKIT_CONFIG is missing.");
@@ -122,8 +123,23 @@ ${value}
 ${delim}
 `);
 }
+function enterProjectDir() {
+  const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
+  const sub = (readConfig().projectDir ?? "").trim();
+  const dir = resolve(root, sub);
+  if (dir !== root && !dir.startsWith(root + sep2)) throw new Error("The app folder must be inside the repository.");
+  if (!existsSync2(dir)) throw new Error(`The folder "${sub}" does not exist in this repository. Has it been pushed to GitHub?`);
+  process.chdir(dir);
+  return dir;
+}
 function main(fn) {
-  fn().catch((err) => {
+  Promise.resolve().then(() => {
+    const dir = enterProjectDir();
+    if (!existsSync2("package.json")) {
+      throw new Error(`There is no package.json in "${readConfig().projectDir || "the top of the repository"}" on GitHub. Check that your app's code has been pushed.`);
+    }
+    exportEnv("SHIPKIT_PROJECT_DIR", dir);
+  }).then(fn).catch((err) => {
     console.error(`::error::${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   });

@@ -67,19 +67,19 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Get your app's code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get the ShipKit build scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: gunjankothari/shipkit-workflows
           ref: v1
           path: .shipkit-tools
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install packages and prepare the iPhone project
         env:
@@ -87,8 +87,7 @@ jobs:
         run: node "$SHIPKIT_TOOLS/prepare-project.mjs" ios
 
       - name: Install iPhone libraries
-        working-directory: ios
-        run: pod install
+        run: cd "$SHIPKIT_PROJECT_DIR/ios" && pod install
 
       - name: Put the signing certificate in a temporary keychain
         env:
@@ -125,6 +124,7 @@ jobs:
           SCHEME: ${{ steps.prepare.outputs.scheme }}
         run: |
           set -euo pipefail
+          cd "$SHIPKIT_PROJECT_DIR"
           xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
             "OTHER_CODE_SIGN_FLAGS=--keychain $SHIPKIT_KEYCHAIN"
@@ -132,8 +132,9 @@ jobs:
       - name: Package the build for the App Store
         run: |
           set -euo pipefail
+          cd "$SHIPKIT_PROJECT_DIR"
           xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/export -exportOptionsPlist build/ExportOptions.plist
-          echo "SHIPKIT_IPA=$(ls build/export/*.ipa | head -1)" >> "$GITHUB_ENV"
+          echo "SHIPKIT_IPA=$(ls "$PWD"/build/export/*.ipa | head -1)" >> "$GITHUB_ENV"
 
       - name: Upload to App Store Connect
         id: store
@@ -155,7 +156,7 @@ jobs:
       # ShipKit desktop app can download it, upload it, and then delete it.
       - name: Keep the signed build for ShipKit to upload
         if: inputs.upload != 'github' || steps.store.outcome != 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: shipkit-build-${{ inputs.build_id }}
           path: ${{ env.SHIPKIT_IPA }}
@@ -166,7 +167,7 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/shipkit.keychain-db" || true
-          rm -rf "$RUNNER_TEMP/asc-keys" "$RUNNER_TEMP/app.mobileprovision" .env
+          rm -rf "$RUNNER_TEMP/asc-keys" "$RUNNER_TEMP/app.mobileprovision" "${SHIPKIT_PROJECT_DIR:-.}/.env"
 
   android:
     name: Build for Android
@@ -175,22 +176,22 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Get your app's code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get the ShipKit build scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: gunjankothari/shipkit-workflows
           ref: v1
           path: .shipkit-tools
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -204,7 +205,6 @@ jobs:
         run: node "$SHIPKIT_TOOLS/prepare-android.mjs"
 
       - name: Build and sign the app
-        working-directory: android
         env:
           KEYSTORE_BASE64: ${{ secrets.SHIPKIT_ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_STORE_PASSWORD }}
@@ -212,6 +212,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          cd "$SHIPKIT_PROJECT_DIR/android"
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.keystore"
           chmod +x ./gradlew
           ./gradlew bundleRelease --no-daemon \
@@ -219,7 +220,7 @@ jobs:
             "-Pandroid.injected.signing.store.password=$STORE_PASSWORD" \
             "-Pandroid.injected.signing.key.alias=$KEY_ALIAS" \
             "-Pandroid.injected.signing.key.password=$KEY_PASSWORD"
-          echo "SHIPKIT_AAB_PATH=$GITHUB_WORKSPACE/android/app/build/outputs/bundle/release/app-release.aab" >> "$GITHUB_ENV"
+          echo "SHIPKIT_AAB_PATH=$SHIPKIT_PROJECT_DIR/android/app/build/outputs/bundle/release/app-release.aab" >> "$GITHUB_ENV"
 
       - name: Upload to Google Play
         id: store
@@ -231,7 +232,7 @@ jobs:
 
       - name: Keep the signed build for ShipKit to upload
         if: inputs.upload != 'github' || steps.store.outcome != 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: shipkit-build-${{ inputs.build_id }}
           path: ${{ env.SHIPKIT_AAB_PATH }}
@@ -240,4 +241,4 @@ jobs:
 
       - name: Delete the keystore
         if: always()
-        run: rm -f "$RUNNER_TEMP/upload.keystore" .env
+        run: rm -f "$RUNNER_TEMP/upload.keystore" "${SHIPKIT_PROJECT_DIR:-.}/.env"
