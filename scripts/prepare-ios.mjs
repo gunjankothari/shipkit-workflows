@@ -40,19 +40,23 @@ var MANAGED_KEYS = [
   '"CODE_SIGN_IDENTITY\\[sdk=iphoneos\\*\\]"',
   "CURRENT_PROJECT_VERSION"
 ];
-function applyIosBuildSettings(pbx, bundleId, s) {
+function applyIosBuildSettings(pbx, s) {
   let blocks = 0;
-  const otherBundleIds = /* @__PURE__ */ new Set();
+  const unsigned = /* @__PURE__ */ new Set();
+  const infoPlists = /* @__PURE__ */ new Set();
   const blockRe = /(buildSettings = \{\n)([\s\S]*?)(\n\t*\};)/g;
   const idRe = /PRODUCT_BUNDLE_IDENTIFIER = "?([^";\n]+)"?;/;
   const out = pbx.replace(blockRe, (whole, open, body, close) => {
     const id = body.match(idRe)?.[1]?.trim();
     if (!id) return whole;
-    if (id !== bundleId) {
-      if (!/tests?$/i.test(id) && !id.includes("$(")) otherBundleIds.add(id);
+    const profileName = s.profiles[id];
+    if (!profileName) {
+      if (!/tests?$/i.test(id) && !id.includes("$(")) unsigned.add(id);
       return whole;
     }
     blocks++;
+    const plist = body.match(/(?:^|\n)\s*INFOPLIST_FILE = "?([^";\n]+)"?;/)?.[1]?.trim();
+    if (plist) infoPlists.add(plist);
     const indent = body.match(/^(\t+)/)?.[1] ?? "				";
     const kept = body.split("\n").filter((line) => !MANAGED_KEYS.some((k) => new RegExp(`^\\s*${k} = `).test(line)));
     kept.push(
@@ -60,19 +64,25 @@ function applyIosBuildSettings(pbx, bundleId, s) {
       `${indent}CODE_SIGN_STYLE = Manual;`,
       `${indent}CURRENT_PROJECT_VERSION = ${s.buildNumber};`,
       `${indent}DEVELOPMENT_TEAM = ${s.teamId};`,
-      `${indent}PROVISIONING_PROFILE_SPECIFIER = "${s.profileName.replace(/"/g, '\\"')}";`
+      `${indent}PROVISIONING_PROFILE_SPECIFIER = "${profileName.replace(/"/g, '\\"')}";`
     );
     return `${open}${kept.join("\n")}${close}`;
   });
   if (blocks === 0) {
-    throw new UserFacingError(`ShipKit couldn't find the app "${bundleId}" inside the iPhone project.`, {
-      hint: "The bundle identifier in the project is different from the one ShipKit has for this app. Check the app details in ShipKit."
+    throw new UserFacingError(`ShipKit couldn't find ${Object.keys(s.profiles).map((b) => `"${b}"`).join(" or ")} inside the iPhone project.`, {
+      hint: 'The bundle identifier in the project is different from the one signing was set up for. Run "Set up iPhone signing" again.'
     });
   }
-  return { pbx: out, blocks, otherBundleIds: [...otherBundleIds] };
+  return { pbx: out, blocks, unsigned: [...unsigned], infoPlists: [...infoPlists] };
+}
+function unsignedTargetsError(unsigned) {
+  return new UserFacingError("Part of this app has no signing set up yet.", {
+    hint: `ShipKit found ${unsigned.map((u) => `"${u}"`).join(", ")}, which was not there when signing was last set up (for example a newly added widget). Run "Set up iPhone signing" again.`
+  });
 }
 function exportOptionsPlist(opts) {
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const entries = Object.entries(opts.profiles).map(([bundleId, name]) => `    <key>${esc(bundleId)}</key><string>${esc(name)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,7 +94,7 @@ function exportOptionsPlist(opts) {
   <key>signingCertificate</key><string>Apple Distribution</string>
   <key>provisioningProfiles</key>
   <dict>
-    <key>${esc(opts.bundleId)}</key><string>${esc(opts.profileName)}</string>
+${entries}
   </dict>
   <key>uploadSymbols</key><true/>
   <key>manageAppVersionAndBuildNumber</key><false/>
@@ -211,16 +221,18 @@ function main(fn) {
 main(async () => {
   const cfg = readConfig();
   const buildNumber = Number(requireEnv("SHIPKIT_BUILD_NUMBER"));
-  if (!cfg.iosBundleId || !cfg.teamId || !cfg.profileName) throw new Error("The iPhone signing details are missing from the build settings.");
+  if (!cfg.teamId || !cfg.iosProfiles || Object.keys(cfg.iosProfiles).length === 0) throw new Error("The iPhone signing details are missing from the build settings.");
   const ws = findWorkspace(join3(process.cwd(), "ios"));
-  const edited = applyIosBuildSettings(readFileSync2(ws.projectFile, "utf8"), cfg.iosBundleId, { teamId: cfg.teamId, profileName: cfg.profileName, buildNumber });
-  if (edited.otherBundleIds.length > 0) throw new Error(`This app includes an extension, which ShipKit cannot sign yet: ${edited.otherBundleIds.join(", ")}`);
+  const edited = applyIosBuildSettings(readFileSync2(ws.projectFile, "utf8"), { teamId: cfg.teamId, profiles: cfg.iosProfiles, buildNumber });
+  if (edited.unsigned.length > 0) throw new Error(`${unsignedTargetsError(edited.unsigned).message} ${unsignedTargetsError(edited.unsigned).hint ?? ""}`);
   writeFileSync2(ws.projectFile, edited.pbx);
-  const plist = join3(process.cwd(), "ios", ws.scheme, "Info.plist");
-  if (existsSync3(plist)) await exec("/usr/libexec/PlistBuddy", ["-c", `Set :CFBundleVersion ${buildNumber}`, plist], { allowFailure: true });
+  for (const rel of edited.infoPlists) {
+    const plist = join3(process.cwd(), "ios", rel);
+    if (existsSync3(plist)) await exec("/usr/libexec/PlistBuddy", ["-c", `Set :CFBundleVersion ${buildNumber}`, plist], { allowFailure: true });
+  }
   mkdirSync("build", { recursive: true });
-  writeFileSync2(join3("build", "ExportOptions.plist"), exportOptionsPlist({ method: exportMethodFor(await xcodeVersion(exec)), teamId: cfg.teamId, bundleId: cfg.iosBundleId, profileName: cfg.profileName }));
+  writeFileSync2(join3("build", "ExportOptions.plist"), exportOptionsPlist({ method: exportMethodFor(await xcodeVersion(exec)), teamId: cfg.teamId, profiles: cfg.iosProfiles }));
   setOutput("workspace", ws.workspace);
   setOutput("scheme", ws.scheme);
-  console.log(`Signing applied to ${edited.blocks} build configuration(s); build ${buildNumber}.`);
+  console.log(`Signing applied to ${edited.blocks} build configuration(s) across ${Object.keys(cfg.iosProfiles).length} part(s); build ${buildNumber}.`);
 });
