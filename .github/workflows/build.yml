@@ -190,6 +190,14 @@ jobs:
             /usr/local/share/powershell /usr/local/share/chromium /usr/lib/google-cloud-sdk /opt/az /opt/microsoft || true
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h / | tail -1
+          # Compiling native code (for example Reanimated) for four processor types at once can use
+          # more memory than the machine has; extra swap keeps the machine from being shut down.
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /swapfile-shipkit
+          sudo chmod 600 /swapfile-shipkit
+          sudo mkswap /swapfile-shipkit > /dev/null
+          sudo swapon /swapfile-shipkit
+          free -m
 
       - name: Get your app's code
         uses: actions/checkout@v5
@@ -232,7 +240,11 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.keystore"
           chmod +x ./gradlew
           df -h / | tail -1
-          ./gradlew bundleRelease --no-daemon \
+          # Log free disk and memory while building, so a machine that runs out shows which one.
+          ( while sleep 30; do echo "[resources] disk: $(df -h / | awk 'NR==2 {print $4 " free"}'), memory: $(free -m | awk '/^Mem:/ {print $7 " MB available"}'), swap used: $(free -m | awk '/^Swap:/ {print $3 " MB"}')"; done ) &
+          monitor=$!
+          trap 'kill $monitor 2>/dev/null || true' EXIT
+          ./gradlew bundleRelease --no-daemon --max-workers=2 \
             "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/upload.keystore" \
             "-Pandroid.injected.signing.store.password=$STORE_PASSWORD" \
             "-Pandroid.injected.signing.key.alias=$KEY_ALIAS" \
