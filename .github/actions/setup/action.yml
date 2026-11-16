@@ -15,6 +15,9 @@ runs:
   steps:
     - name: Get your app's code
       uses: actions/checkout@v5
+      with:
+        # The branch chosen in ShipKit. Empty means the branch the build was started on.
+        ref: ${{ fromJSON(env.SHIPKIT_CONFIG).ref || '' }}
 
     - name: Get the ShipKit build scripts
       uses: actions/checkout@v5

@@ -31,6 +31,13 @@ on:
       config:
         type: string
         required: true
+      tag:
+        type: string
+        required: false
+        # When set, a GitHub Release is created with this tag and the build files attached.
+      release_notes:
+        type: string
+        required: false
     secrets:
       SHIPKIT_ENV_FILE:
         required: false
@@ -157,6 +164,15 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Upload IPA for release
+        if: inputs.tag != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: shipkit-release-ipa-${{ inputs.build_id }}
+          path: ${{ env.SHIPKIT_IPA }}
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Delete the temporary keychain and keys
         if: always()
         run: |
@@ -210,6 +226,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SHIPKIT_ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_KEY_PASSWORD }}
+          SHIPKIT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           cd "$SHIPKIT_PROJECT_DIR/android"
@@ -220,12 +237,14 @@ jobs:
           ( while sleep 30; do echo "[resources] disk: $(df -h / | awk 'NR==2 {print $4 " free"}'), memory: $(free -m | awk '/^Mem:/ {print $7 " MB available"}'), swap used: $(free -m | awk '/^Swap:/ {print $3 " MB"}')"; done ) &
           monitor=$!
           trap 'kill $monitor 2>/dev/null || true' EXIT
-          ./gradlew bundleRelease --no-daemon --max-workers=2 \
+          TASKS="bundleRelease${SHIPKIT_TAG:+ assembleRelease}"
+          ./gradlew $TASKS --no-daemon --max-workers=2 \
             "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/upload.keystore" \
             "-Pandroid.injected.signing.store.password=$STORE_PASSWORD" \
             "-Pandroid.injected.signing.key.alias=$KEY_ALIAS" \
             "-Pandroid.injected.signing.key.password=$KEY_PASSWORD"
           echo "SHIPKIT_AAB_PATH=$SHIPKIT_PROJECT_DIR/android/app/build/outputs/bundle/release/app-release.aab" >> "$GITHUB_ENV"
+          echo "SHIPKIT_APK_PATH=$SHIPKIT_PROJECT_DIR/android/app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
 
       - name: Upload to Google Play
         id: store
@@ -244,6 +263,62 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Upload AAB and APK for release
+        if: inputs.tag != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: shipkit-release-android-${{ inputs.build_id }}
+          path: |
+            ${{ env.SHIPKIT_AAB_PATH }}
+            ${{ env.SHIPKIT_APK_PATH }}
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Delete the keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.keystore" "${SHIPKIT_PROJECT_DIR:-.}/.env"
+
+  release:
+    name: Create GitHub Release
+    needs: [ios, android]
+    # Run when a tag was requested and at least one platform built successfully.
+    # 'skipped' means that platform was not in scope; treat it the same as success.
+    if: >
+      always() &&
+      inputs.tag != '' &&
+      (needs.ios.result == 'success' || needs.ios.result == 'skipped') &&
+      (needs.android.result == 'success' || needs.android.result == 'skipped') &&
+      (needs.ios.result == 'success' || needs.android.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA
+        if: needs.ios.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: shipkit-release-ipa-${{ inputs.build_id }}
+          path: release-files
+
+      - name: Download AAB and APK
+        if: needs.android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: shipkit-release-android-${{ inputs.build_id }}
+          path: release-files
+
+      - name: Create release with build files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$NOTES" > /tmp/notes.md
+          FILES=$(find release-files -type f | sort | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file /tmp/notes.md \
+            $FILES
