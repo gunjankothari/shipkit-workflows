@@ -13,9 +13,18 @@ on:
       platform:
         type: string
         required: true
+        # ios, android, or both
       build_number:
         type: string
         required: true
+      # Separate build numbers for each platform when platform is 'both'.
+      # When omitted, build_number is used for both.
+      ios_build_number:
+        type: string
+        required: false
+      android_build_number:
+        type: string
+        required: false
       upload:
         type: string
         required: true
@@ -54,7 +63,6 @@ permissions:
 env:
   # Inputs reach scripts through the environment, never by being pasted into a command.
   SHIPKIT_CONFIG: ${{ inputs.config }}
-  SHIPKIT_BUILD_NUMBER: ${{ inputs.build_number }}
   SHIPKIT_BUILD_ID: ${{ inputs.build_id }}
   SHIPKIT_UPLOAD: ${{ inputs.upload }}
   SHIPKIT_TOOLS: ${{ github.workspace }}/.shipkit-tools/scripts
@@ -62,37 +70,17 @@ env:
 jobs:
   ios:
     name: Build for iPhone
-    if: inputs.platform == 'ios'
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
     runs-on: macos-26
     timeout-minutes: 90
+    env:
+      SHIPKIT_BUILD_NUMBER: ${{ inputs.ios_build_number || inputs.build_number }}
     steps:
-      - name: Get your app's code
-        uses: actions/checkout@v5
-
-      - name: Get the ShipKit build scripts
-        uses: actions/checkout@v5
+      - name: Set up the project
+        uses: gunjankothari/shipkit-workflows/.github/actions/setup@v1
         with:
-          repository: gunjankothari/shipkit-workflows
-          ref: v1
-          path: .shipkit-tools
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
-      # Recent React Native and Expo versions need the newest Xcode, and Apple requires it for App Store uploads.
-      - name: Choose the newest Xcode
-        run: |
-          set -euo pipefail
-          XCODE="$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)"
-          sudo xcode-select -s "$XCODE/Contents/Developer"
-          xcodebuild -version
-
-      - name: Install packages and prepare the iPhone project
-        env:
-          SHIPKIT_ENV_FILE: ${{ secrets.SHIPKIT_ENV_FILE }}
-        run: node "$SHIPKIT_TOOLS/prepare-project.mjs" ios
+          platform: ios
+          env_file: ${{ secrets.SHIPKIT_ENV_FILE }}
 
       - name: Install iPhone libraries
         run: cd "$SHIPKIT_PROJECT_DIR/ios" && pod install
@@ -164,7 +152,7 @@ jobs:
         if: inputs.upload != 'github' || steps.store.outcome != 'success'
         uses: actions/upload-artifact@v5
         with:
-          name: shipkit-build-${{ inputs.build_id }}
+          name: shipkit-build-${{ inputs.build_id }}${{ inputs.platform == 'both' && '-ios' || '' }}
           path: ${{ env.SHIPKIT_IPA }}
           retention-days: 1
           if-no-files-found: error
@@ -177,9 +165,11 @@ jobs:
 
   android:
     name: Build for Android
-    if: inputs.platform == 'android'
+    if: inputs.platform == 'android' || inputs.platform == 'both'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      SHIPKIT_BUILD_NUMBER: ${{ inputs.android_build_number || inputs.build_number }}
     steps:
       # GitHub's Linux machines come with many tools an app build never uses. A React Native build
       # needs the room, and runs out of disk space without this.
@@ -199,31 +189,17 @@ jobs:
           sudo swapon /swapfile-shipkit
           free -m
 
-      - name: Get your app's code
-        uses: actions/checkout@v5
-
-      - name: Get the ShipKit build scripts
-        uses: actions/checkout@v5
+      - name: Set up the project
+        uses: gunjankothari/shipkit-workflows/.github/actions/setup@v1
         with:
-          repository: gunjankothari/shipkit-workflows
-          ref: v1
-          path: .shipkit-tools
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
+          platform: android
+          env_file: ${{ secrets.SHIPKIT_ENV_FILE }}
 
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Install packages and prepare the Android project
-        env:
-          SHIPKIT_ENV_FILE: ${{ secrets.SHIPKIT_ENV_FILE }}
-        run: node "$SHIPKIT_TOOLS/prepare-project.mjs" android
 
       - name: Apply the build number
         run: node "$SHIPKIT_TOOLS/prepare-android.mjs"
@@ -263,7 +239,7 @@ jobs:
         if: inputs.upload != 'github' || steps.store.outcome != 'success'
         uses: actions/upload-artifact@v5
         with:
-          name: shipkit-build-${{ inputs.build_id }}
+          name: shipkit-build-${{ inputs.build_id }}${{ inputs.platform == 'both' && '-android' || '' }}
           path: ${{ env.SHIPKIT_AAB_PATH }}
           retention-days: 1
           if-no-files-found: error
