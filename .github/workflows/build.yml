@@ -226,6 +226,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SHIPKIT_ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.SHIPKIT_ANDROID_KEY_PASSWORD }}
+          SHIPKIT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           cd "$SHIPKIT_PROJECT_DIR/android"
@@ -236,7 +237,8 @@ jobs:
           ( while sleep 30; do echo "[resources] disk: $(df -h / | awk 'NR==2 {print $4 " free"}'), memory: $(free -m | awk '/^Mem:/ {print $7 " MB available"}'), swap used: $(free -m | awk '/^Swap:/ {print $3 " MB"}')"; done ) &
           monitor=$!
           trap 'kill $monitor 2>/dev/null || true' EXIT
-          ./gradlew bundleRelease assembleRelease --no-daemon --max-workers=2 \
+          TASKS="bundleRelease${SHIPKIT_TAG:+ assembleRelease}"
+          ./gradlew $TASKS --no-daemon --max-workers=2 \
             "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/upload.keystore" \
             "-Pandroid.injected.signing.store.password=$STORE_PASSWORD" \
             "-Pandroid.injected.signing.key.alias=$KEY_ALIAS" \
