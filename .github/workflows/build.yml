@@ -312,6 +312,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           NOTES: ${{ inputs.release_notes }}
+          # Tag the commit that was built: the chosen branch, or the commit the build started on.
+          TARGET: ${{ fromJSON(inputs.config).ref || github.sha }}
         run: |
           set -euo pipefail
           printf '%s' "$NOTES" > /tmp/notes.md
@@ -320,5 +322,6 @@ jobs:
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
+            --target "$TARGET" \
             --notes-file /tmp/notes.md \
             $FILES
