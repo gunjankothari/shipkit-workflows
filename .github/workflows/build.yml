@@ -89,6 +89,18 @@ jobs:
           platform: ios
           env_file: ${{ secrets.SHIPKIT_ENV_FILE }}
 
+      # App Store Connect requires the iOS 27 SDK (Xcode 27+) from April 2027 (ITMS-90725).
+      - name: Select Xcode 27
+        run: |
+          XCODE_APP=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$XCODE_APP" ]; then
+            echo "::error::Xcode 27 is not installed on this runner. Available:" && ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
       - name: Install iPhone libraries
         run: cd "$SHIPKIT_PROJECT_DIR/ios" && pod install
 
